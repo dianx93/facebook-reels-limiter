@@ -232,8 +232,6 @@
 
     // === Progress widget logic ===
     function showProgressBar(current, max) {
-        const firstVisit = getSession('frwl_first_visit', now());
-
         let bar = document.getElementById('reel-limit-bar');
         let timeEl, counterEl, fill;
 
@@ -281,6 +279,7 @@
 
             // ⏱ Update time wasted every second
             setInterval(() => {
+                const firstVisit = getSession('frwl_first_visit', now());
                 const mins = Math.floor((now() - firstVisit) / 60000);
                 const secs = Math.floor(((now() - firstVisit) % 60000) / 1000);
                 const t = mins > 0 ? `${mins}m ${secs.toString().padStart(2, '0')}s` : `${secs}s`;
