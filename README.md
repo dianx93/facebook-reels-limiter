@@ -2,7 +2,7 @@
 
 Don't want to get stuck watching Facebook reels but also don't want to get locked out of Facebook when you just leave it open and go afk? This is the script for you!
 
-A Tempermonkey script that lets you only watch a certain amount of Facebook reels in succession but also notices when you're afk.
+A Tampermonkey script that lets you only watch a certain amount of Facebook reels in succession but also notices when you're afk.
 
 ## ✨ Features
 
