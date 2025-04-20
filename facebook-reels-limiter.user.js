@@ -3,6 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      1.0
 // @description  Limit your time watching Reels. Blocks Facebook for a cooldown after hitting your limit.
+// @author       Diana Täht (dianx93)
 // @match        *://*.facebook.com/*
 // @grant        none
 // ==/UserScript==
