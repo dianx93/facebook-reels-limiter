@@ -144,6 +144,20 @@
             const r = visibleRect(el);
             if (r && r.top <= 0) top = Math.max(top, r.bottom);
         });
+
+        // The full-screen Reel viewer (opened from the feed) has a see-through top bar with the video
+        // showing between its buttons. Cover that strip too; the buttons are layered above the overlay.
+        const v = activeVideo();
+        if (v && top > 0) {
+            const r = v.getBoundingClientRect();
+            if (r.top < top) {
+                const stack = document.elementsFromPoint((r.left + r.right) / 2, Math.max(r.top, 0) + 1);
+                const barIndex = stack.findIndex(el => el.closest(TOP_BAR_SELECTOR));
+                const videoIndex = stack.indexOf(v);
+                if (videoIndex !== -1 && (barIndex === -1 || videoIndex < barIndex)) top = 0;
+            }
+        }
+
         overlay.style.top = `${Math.round(top)}px`;
     }
 
