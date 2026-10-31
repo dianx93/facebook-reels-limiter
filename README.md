@@ -13,10 +13,10 @@ A Tampermonkey script that lets you only watch a certain amount of Facebook reel
   See how many Reels you've watched out of your session limit.
 
 - ⛔ **Automatic Blocking**  
-  After watching too many Reels, Facebook is blocked for a cooldown period.
+  After watching too many Reels, a countdown screen covers Reels for a cooldown period. Facebook's top bar (Home, search, Messenger, notifications) stays usable, and the rest of Facebook works normally.
 
-- 🔄 **Auto-Unblocks After Cooldown**  
-  Timer counts down, then automatically reloads the page to let you back in.
+- ▶️ **You Choose When To Continue**  
+  When the cooldown ends, nothing starts playing on its own. Press **Resume** to watch the Reel you were blocked on, or scroll / use the arrow keys to move on to a new one.
 
 - 🎯 **SPA-Aware**  
   Works with Facebook's single-page app navigation (no page reloads needed).
