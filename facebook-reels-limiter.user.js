@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Facebook Reels Watch Limit
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  Limit your time watching Reels. Blocks Reels for a cooldown after hitting your limit.
 // @author       Diana Täht (dianx93)
 // @match        *://*.facebook.com/*
@@ -168,6 +168,19 @@
         let el = banner && banner.parentElement;
         while (el && el !== document.body && getComputedStyle(el).zIndex === 'auto') el = el.parentElement;
         return el || document.body;
+    }
+
+    // Facebook's chat windows are on the same layer as the Reels, in a container that comes after them.
+    // Put the overlay right after the Reels so it covers them but stays below the chats opened later.
+    function placeOverlay(overlay) {
+        const host = overlayHost();
+        let reels = activeVideo();
+        while (reels && reels.parentElement !== host) reels = reels.parentElement;
+        if (reels) {
+            if (overlay.previousElementSibling !== reels) reels.after(overlay);
+        } else if (overlay.parentElement !== host) {
+            host.appendChild(overlay);
+        }
     }
 
     function createNavButton(label, href) {
@@ -363,7 +376,7 @@
         removeProgressBar();
         const els = createOverlay();
         const { overlay, timeEl, resumeBtn } = els;
-        overlayHost().appendChild(overlay);
+        placeOverlay(overlay);
 
         resumeBtn.addEventListener('click', resumeBlockedReel);
 
@@ -431,8 +444,7 @@
                 timeEl.textContent = formatRemaining(remaining);
             }
             // Facebook may re-render the page container; follow it
-            const host = overlayHost();
-            if (overlay.parentElement !== host) host.appendChild(overlay);
+            placeOverlay(overlay);
             positionOverlay(overlay);
             pauseAllMedia();
         };
