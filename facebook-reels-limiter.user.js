@@ -22,13 +22,12 @@
 
     // === Keys ===
     const SESSION_KEYS = {
-        count: 'frwl_count',
+        firstVisit: 'frwl_first_visit',
         lastVisit: 'frwl_last_visit',
         seen: 'frwl_seen'
     };
-    const LOCAL_KEYS = {
-        blockUntil: 'frwl_block_until'
-    };
+    // Kept in both localStorage and sessionStorage
+    const BLOCK_UNTIL_KEY = 'frwl_block_until';
 
     // === Facebook navigation that must stay usable while blocked ===
     // Top bar (Home, search, Messenger, notifications...) and the popups/chats it opens
@@ -49,24 +48,27 @@
     let lastReelId = '';
     let blockUntilCache = 0;
     let block = null;
-    let progressTimerId = 0;
+    let progress = null;
 
     // === Storage helpers ===
     function now() {
         return Date.now();
     }
 
-    function getSession(key, fallback = 0) {
-        const val = sessionStorage.getItem(key);
-        const parsed = parseInt(val, 10);
+    function readInt(storage, key, fallback = 0) {
+        const parsed = parseInt(storage.getItem(key), 10);
         return isNaN(parsed) ? fallback : parsed;
     }
 
-    function setSession(key, value) {
-        sessionStorage.setItem(key, value.toString());
+    function getSession(key, fallback = 0) {
+        return readInt(sessionStorage, key, fallback);
     }
 
-    // Reels already counted this round, so scrolling back to them is free
+    function setSession(key, value) {
+        sessionStorage.setItem(key, value);
+    }
+
+    // Reels counted this round (its length is the count), so scrolling back to them is free
     function getSeenReels() {
         try {
             const seen = JSON.parse(sessionStorage.getItem(SESSION_KEYS.seen));
@@ -76,39 +78,32 @@
         }
     }
 
-    function addSeenReel(id) {
-        const seen = getSeenReels();
-        if (!seen.includes(id)) seen.push(id);
+    function setSeenReels(seen) {
         sessionStorage.setItem(SESSION_KEYS.seen, JSON.stringify(seen));
     }
 
     function setBlockUntil(value) {
         blockUntilCache = value;
-        sessionStorage.setItem(LOCAL_KEYS.blockUntil, value.toString());
-        localStorage.setItem(LOCAL_KEYS.blockUntil, value.toString());
+        sessionStorage.setItem(BLOCK_UNTIL_KEY, value);
+        localStorage.setItem(BLOCK_UNTIL_KEY, value);
     }
 
     function getBlockUntil() {
         const nowTime = now();
 
-        const tryParse = (val, source) => {
-            const parsed = parseInt(val, 10);
-            if (!isNaN(parsed)) {
-                if (parsed > nowTime) {
-                    console.log(`[ReelLimit] blockUntil from ${source}: ${parsed}`);
-                    return parsed;
-                } else {
-                    console.log(`[ReelLimit] blockUntil from ${source} is expired`);
-                }
+        const fromStorage = (storage, source) => {
+            const parsed = readInt(storage, BLOCK_UNTIL_KEY);
+            if (!parsed) return 0;
+            if (parsed <= nowTime) {
+                console.log(`[ReelLimit] blockUntil from ${source} is expired`);
+                return 0;
             }
-            return 0;
+            console.log(`[ReelLimit] blockUntil from ${source}: ${parsed}`);
+            return parsed;
         };
 
-        const fromLocal = tryParse(localStorage.getItem(LOCAL_KEYS.blockUntil), 'localStorage');
-        if (fromLocal) return fromLocal;
-
-        const fromSession = tryParse(sessionStorage.getItem(LOCAL_KEYS.blockUntil), 'sessionStorage');
-        if (fromSession) return fromSession;
+        const stored = fromStorage(localStorage, 'localStorage') || fromStorage(sessionStorage, 'sessionStorage');
+        if (stored) return stored;
 
         if (blockUntilCache > nowTime) {
             console.warn(`[ReelLimit] Restoring blockUntil from in-memory cache: ${blockUntilCache}`);
@@ -123,11 +118,13 @@
         return url.includes('/reel/');
     }
 
+    function getReelId(url) {
+        return url.split('/reel/')[1]?.split(/[/?#]/)[0] || '';
+    }
+
     function resetCounter() {
-        setSession(SESSION_KEYS.count, 0);
         sessionStorage.removeItem(SESSION_KEYS.seen);
-        setSession(SESSION_KEYS.lastVisit, now());
-        setSession('frwl_first_visit', now());
+        setSession(SESSION_KEYS.firstVisit, now());
         console.log('[ReelLimit] Counter reset');
     }
 
@@ -136,6 +133,12 @@
         const mins = Math.floor(totalSecs / 60);
         const secs = totalSecs % 60;
         return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    // Keep an event from its default action and from Facebook's own handlers
+    function swallow(e) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
     }
 
     function pauseAllMedia() {
@@ -156,7 +159,7 @@
 
     // Fit the overlay to the area below Facebook's top bar.
     // The banner element itself has no height; the visible bar is a fixed child of it.
-    function positionOverlay(overlay) {
+    function positionOverlay(overlay, video) {
         let top = 0;
         document.querySelectorAll(`${TOP_BAR_SELECTOR}, ${TOP_BAR_SELECTOR} > *`).forEach(el => {
             const r = visibleRect(el);
@@ -165,13 +168,12 @@
 
         // The full-screen Reel viewer (opened from the feed) has a see-through top bar with the video
         // showing between its buttons. Cover that strip too; the buttons are layered above the overlay.
-        const v = activeVideo();
-        if (v && top > 0) {
-            const r = v.getBoundingClientRect();
+        if (video && top > 0) {
+            const r = video.getBoundingClientRect();
             if (r.top < top) {
                 const stack = document.elementsFromPoint((r.left + r.right) / 2, Math.max(r.top, 0) + 1);
                 const barIndex = stack.findIndex(el => el.closest(TOP_BAR_SELECTOR));
-                const videoIndex = stack.indexOf(v);
+                const videoIndex = stack.indexOf(video);
                 if (videoIndex !== -1 && (barIndex === -1 || videoIndex < barIndex)) top = 0;
             }
         }
@@ -190,9 +192,9 @@
 
     // Facebook's chat windows are on the same layer as the Reels, in a container that comes after them.
     // Put the overlay right after the Reels so it covers them but stays below the chats opened later.
-    function placeOverlay(overlay) {
+    function placeOverlay(overlay, video) {
         const host = overlayHost();
-        let reels = activeVideo();
+        let reels = video;
         while (reels && reels.parentElement !== host) reels = reels.parentElement;
         if (reels) {
             if (overlay.previousElementSibling !== reels) reels.after(overlay);
@@ -205,30 +207,27 @@
         const a = document.createElement('a');
         a.href = href;
         a.textContent = label;
+        const background = '#3a3b3c';
         Object.assign(a.style, {
             display: 'inline-block',
             padding: '10px 18px',
             borderRadius: '18px',
-            background: '#3a3b3c',
+            background,
             color: '#e4e6eb',
             fontSize: '14px',
             fontWeight: '600',
             textDecoration: 'none'
         });
         a.addEventListener('mouseenter', () => { a.style.background = '#4e4f50'; });
-        a.addEventListener('mouseleave', () => { a.style.background = '#3a3b3c'; });
+        a.addEventListener('mouseleave', () => { a.style.background = background; });
         return a;
     }
 
     function createOverlay() {
         const overlay = document.createElement('div');
-        overlay.id = 'reel-limit-block';
         Object.assign(overlay.style, {
             position: 'fixed',
-            top: '0',
-            right: '0',
-            bottom: '0',
-            left: '0',
+            inset: '0',
             zIndex: OVERLAY_Z_INDEX,
             background: '#18191a',
             color: '#e4e6eb',
@@ -280,8 +279,7 @@
 
         const links = document.createElement('div');
         Object.assign(links.style, { display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' });
-        links.appendChild(createNavButton('Home', '/'));
-        links.appendChild(createNavButton('Messenger', '/messages/'));
+        links.append(createNavButton('Home', '/'), createNavButton('Messenger', '/messages/'));
 
         overlay.append(title, subtitle, timeEl, resumeBtn, links);
         return { overlay, title, subtitle, timeEl, resumeBtn };
@@ -364,8 +362,7 @@
         let idleTimer = 0;
         const stopEating = () => window.removeEventListener('wheel', eatWheel, true);
         const eatWheel = (e) => {
-            e.preventDefault();
-            e.stopImmediatePropagation();
+            swallow(e);
             clearTimeout(idleTimer);
             idleTimer = setTimeout(stopEating, 300);
         };
@@ -375,8 +372,7 @@
 
         const feed = focusReelsFeed();
         if (feed) {
-            const key = direction === 'down' ? 'ArrowDown' : 'ArrowUp';
-            const keyCode = direction === 'down' ? 40 : 38;
+            const [key, keyCode] = direction === 'down' ? ['ArrowDown', 40] : ['ArrowUp', 38];
             feed.dispatchEvent(new KeyboardEvent('keydown', {
                 key, code: key, keyCode, which: keyCode, bubbles: true, cancelable: true
             }));
@@ -394,7 +390,7 @@
         removeProgressBar();
         const els = createOverlay();
         const { overlay, timeEl, resumeBtn } = els;
-        placeOverlay(overlay);
+        placeOverlay(overlay, activeVideo());
 
         resumeBtn.addEventListener('click', resumeBlockedReel);
 
@@ -407,9 +403,8 @@
         // Swallow scrolling on the overlay so the Reels feed underneath can't advance.
         // Once the break is over, a scroll/swipe moves on to another Reel instead.
         const onWheel = (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            if (block && block.unlocked && Math.abs(e.deltaY) > 0) skipReel(e.deltaY > 0 ? 'down' : 'up');
+            swallow(e);
+            if (block && block.unlocked && e.deltaY !== 0) skipReel(e.deltaY > 0 ? 'down' : 'up');
         };
         overlay.addEventListener('wheel', onWheel, { passive: false });
 
@@ -418,8 +413,7 @@
             touchStartY = e.touches[0].clientY;
         }, { passive: true });
         overlay.addEventListener('touchmove', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
+            swallow(e);
             // Touch events keep targeting the overlay after skipReel() removed it
             if (!block || !block.unlocked || touchStartY === null) return;
             const dy = touchStartY - e.touches[0].clientY;
@@ -438,40 +432,37 @@
                 if (t.closest(NAV_SELECTOR)) return;
             }
             if (block.unlocked && SKIP_KEYS[e.key]) {
-                e.preventDefault();
-                e.stopImmediatePropagation();
+                swallow(e);
                 skipReel(SKIP_KEYS[e.key]);
                 return;
             }
             if (e.key === 'Tab' || e.key === 'Escape') return;
             // Enter/Space on the overlay's own buttons
-            if (t instanceof Element && t.closest('#reel-limit-block')) return;
-            e.preventDefault();
-            e.stopImmediatePropagation();
+            if (t instanceof Node && overlay.contains(t)) return;
+            swallow(e);
         };
         window.addEventListener('keydown', onKey, true);
 
         const tick = () => {
             const remaining = block.until - now();
-            if (remaining <= 0) {
-                if (!block.unlocked) {
-                    block.unlocked = true;
-                    showUnlocked(els);
-                }
-            } else {
+            if (remaining > 0) {
                 timeEl.textContent = formatRemaining(remaining);
+            } else if (!block.unlocked) {
+                block.unlocked = true;
+                showUnlocked(els);
             }
             // Facebook may re-render the page container; follow it
-            placeOverlay(overlay);
-            positionOverlay(overlay);
+            const v = activeVideo();
+            placeOverlay(overlay, v);
+            positionOverlay(overlay, v);
             pauseAllMedia();
         };
 
         block = {
             until,
-            overlay,
             unlocked: false,
-            intervalId: 0,
+            // Short interval so the overlay follows the top bar if it changes size
+            intervalId: setInterval(tick, 250),
             cleanup() {
                 clearInterval(this.intervalId);
                 document.removeEventListener('play', onPlay, true);
@@ -479,10 +470,7 @@
                 overlay.remove();
             }
         };
-
         tick();
-        // Short interval so the overlay follows the top bar if it changes size
-        block.intervalId = setInterval(tick, 250);
         console.log('[ReelLimit] Block overlay shown');
     }
 
@@ -491,12 +479,6 @@
         block.cleanup();
         block = null;
         console.log('[ReelLimit] Block overlay removed');
-    }
-
-    function isBlocked() {
-        const blocked = now() < getBlockUntil();
-        console.log(`[ReelLimit] isBlocked → ${blocked}`);
-        return blocked;
     }
 
     function blockReels() {
@@ -512,11 +494,11 @@
             // Leaving Reels: release everything so the rest of Facebook works normally
             lastReelId = '';
             hideBlockPage();
-            removeProgressBar(); // 👈 remove the bar if leaving reels
+            removeProgressBar();
             return;
         }
 
-        const currentReelId = location.href.split('/reel/')[1]?.split(/[/?#]/)[0] || '';
+        const currentReelId = getReelId(location.href);
         if (!currentReelId) return;
 
         if (currentReelId === lastReelId) {
@@ -533,127 +515,105 @@
             playActiveReel();
         }
 
-        if (isBlocked()) {
-            showBlockPage(getBlockUntil());
+        const blockUntil = getBlockUntil();
+        if (blockUntil) {
+            showBlockPage(blockUntil);
             return;
         }
 
-        let firstVisit = getSession('frwl_first_visit', 0);
-        if (firstVisit === 0) {
-            firstVisit = now();
-            setSession('frwl_first_visit', firstVisit);
-        }
-
-        let lastVisit = getSession(SESSION_KEYS.lastVisit, 0);
         const currentTime = now();
-        if (lastVisit === 0) {
-            console.log(`[ReelLimit] First reel in session — setting lastVisit`);
-            lastVisit = currentTime;
-            setSession(SESSION_KEYS.lastVisit, currentTime);
-        }
-
+        const lastVisit = getSession(SESSION_KEYS.lastVisit);
         const timeSinceLast = currentTime - lastVisit;
-        console.log(`[ReelLimit] lastVisit=${lastVisit}, now=${currentTime}, timeSinceLast=${timeSinceLast}, INACTIVITY_RESET_MS=${INACTIVITY_RESET_MS}`);
-
-        if (timeSinceLast > INACTIVITY_RESET_MS) {
-            console.log(`[ReelLimit] Inactive for ${Math.floor(timeSinceLast / 1000)}s — resetting`);
+        if (!lastVisit || timeSinceLast > INACTIVITY_RESET_MS) {
+            console.log(lastVisit
+                ? `[ReelLimit] Inactive for ${Math.floor(timeSinceLast / 1000)}s — resetting`
+                : '[ReelLimit] First reel in session — starting counter');
             resetCounter();
         }
+        setSession(SESSION_KEYS.lastVisit, currentTime);
 
-        const count = getSession(SESSION_KEYS.count, 0);
-        if (getSeenReels().includes(currentReelId)) {
-            setSession(SESSION_KEYS.lastVisit, now());
-            showProgressBar(count, MAX_REELS);
-            console.log(`[ReelLimit] Already counted ${currentReelId} — Count stays ${count}`);
-        } else if (count + 1 > MAX_REELS) {
+        const seen = getSeenReels();
+        if (seen.includes(currentReelId)) {
+            showProgressBar(seen.length);
+            console.log(`[ReelLimit] Already counted ${currentReelId} — Count stays ${seen.length}`);
+        } else if (seen.length >= MAX_REELS) {
             blockReels();
         } else {
-            setSession(SESSION_KEYS.count, count + 1);
-            addSeenReel(currentReelId);
-            setSession(SESSION_KEYS.lastVisit, now());
-            showProgressBar(count + 1, MAX_REELS);
-            console.log(`[ReelLimit] Count = ${count + 1}`);
+            seen.push(currentReelId);
+            setSeenReels(seen);
+            showProgressBar(seen.length);
+            console.log(`[ReelLimit] Count = ${seen.length}`);
         }
     }
 
     // === Progress widget logic ===
-    function showProgressBar(current, max) {
-        let bar = document.getElementById('reel-limit-bar');
-        let timeEl, counterEl, fill;
+    function showProgressBar(current) {
+        if (progress && !progress.bar.isConnected) removeProgressBar();
 
-        if (!bar) {
-            bar = document.createElement('div');
-            bar.id = 'reel-limit-bar';
-            bar.style.position = 'fixed';
-            bar.style.bottom = '1em';
-            bar.style.left = '1em';
-            bar.style.background = '#222';
-            bar.style.color = '#fff';
-            bar.style.fontSize = '14px';
-            bar.style.fontFamily = 'sans-serif';
-            bar.style.padding = '0.5em 1em';
-            bar.style.borderRadius = '10px';
-            bar.style.boxShadow = '0 0 5px rgba(0,0,0,0.5)';
-            bar.style.zIndex = 999999;
-            bar.style.opacity = '0.9';
+        if (!progress) {
+            const bar = document.createElement('div');
+            Object.assign(bar.style, {
+                position: 'fixed',
+                bottom: '1em',
+                left: '1em',
+                background: '#222',
+                color: '#fff',
+                fontSize: '14px',
+                fontFamily: 'sans-serif',
+                padding: '0.5em 1em',
+                borderRadius: '10px',
+                boxShadow: '0 0 5px rgba(0,0,0,0.5)',
+                zIndex: '999999',
+                opacity: '0.9'
+            });
 
-            timeEl = document.createElement('div');
-            timeEl.id = 'reel-limit-time';
-            bar.appendChild(timeEl);
-
-            counterEl = document.createElement('div');
-            counterEl.id = 'reel-limit-counter';
-            bar.appendChild(counterEl);
+            const timeEl = document.createElement('div');
+            const counterEl = document.createElement('div');
 
             const inner = document.createElement('div');
-            inner.id = 'reel-limit-progress';
-            inner.style.background = '#444';
-            inner.style.borderRadius = '5px';
-            inner.style.overflow = 'hidden';
-            inner.style.marginTop = '0.4em';
+            Object.assign(inner.style, {
+                background: '#444',
+                borderRadius: '5px',
+                overflow: 'hidden',
+                marginTop: '0.4em'
+            });
 
-            fill = document.createElement('div');
-            fill.id = 'reel-limit-fill';
-            fill.style.height = '6px';
-            fill.style.width = '0%';
-            fill.style.background = '#4caf50';
-            fill.style.transition = 'width 0.3s';
+            const fill = document.createElement('div');
+            Object.assign(fill.style, {
+                height: '6px',
+                width: '0%',
+                background: '#4caf50',
+                transition: 'width 0.3s'
+            });
 
             inner.appendChild(fill);
-            bar.appendChild(inner);
+            bar.append(timeEl, counterEl, inner);
             document.body.appendChild(bar);
 
             // ⏱ Update time wasted every second
             const updateTime = () => {
-                const firstVisit = getSession('frwl_first_visit', now());
-                const mins = Math.floor((now() - firstVisit) / 60000);
-                const secs = Math.floor(((now() - firstVisit) % 60000) / 1000);
+                const elapsed = now() - getSession(SESSION_KEYS.firstVisit, now());
+                const mins = Math.floor(elapsed / 60000);
+                const secs = Math.floor((elapsed % 60000) / 1000);
                 const t = mins > 0 ? `${mins}m ${secs.toString().padStart(2, '0')}s` : `${secs}s`;
                 timeEl.textContent = `⏱ Time wasted: ${t}`;
             };
             updateTime();
-            clearInterval(progressTimerId);
-            progressTimerId = setInterval(updateTime, 1000);
-        } else {
-            timeEl = document.getElementById('reel-limit-time');
-            counterEl = document.getElementById('reel-limit-counter');
-            fill = document.getElementById('reel-limit-fill');
+            progress = { bar, counterEl, fill, timerId: setInterval(updateTime, 1000) };
         }
 
         // Update count + progress fill
-        counterEl.textContent = `📊 ${current} / ${max} Reels`;
-        const percent = Math.min(100, Math.floor((current / max) * 100));
-        fill.style.width = `${percent}%`;
+        progress.counterEl.textContent = `📊 ${current} / ${MAX_REELS} Reels`;
+        const percent = Math.min(100, Math.floor((current / MAX_REELS) * 100));
+        progress.fill.style.width = `${percent}%`;
     }
 
     function removeProgressBar() {
-        clearInterval(progressTimerId);
-        progressTimerId = 0;
-        const bar = document.getElementById('reel-limit-bar');
-        if (bar) {
-            bar.remove();
-            console.log('[ReelLimit] Progress bar removed (not on a reel)');
-        }
+        if (!progress) return;
+        clearInterval(progress.timerId);
+        progress.bar.remove();
+        progress = null;
+        console.log('[ReelLimit] Progress bar removed');
     }
 
     // === SPA-safe URL change detector ===
@@ -671,10 +631,7 @@
     observer.observe(document, { subtree: true, childList: true });
     window.addEventListener('popstate', checkUrl);
 
-    // Also trigger on initial page load (especially if page starts on a reel)
-    if (isReelUrl(location.href)) {
-        console.log('[ReelLimit] Initial reel load detected — checking immediately');
-        update();
-    }
+    // Also check on initial page load, in case the page starts on a reel
+    update();
 
 })();
