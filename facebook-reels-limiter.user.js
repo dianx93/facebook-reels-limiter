@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Facebook Reels Watch Limit
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  Limit your time watching Reels. Blocks Reels for a cooldown after hitting your limit.
 // @author       Diana Täht (dianx93)
 // @match        *://*.facebook.com/*
@@ -23,7 +23,8 @@
     // === Keys ===
     const SESSION_KEYS = {
         count: 'frwl_count',
-        lastVisit: 'frwl_last_visit'
+        lastVisit: 'frwl_last_visit',
+        seen: 'frwl_seen'
     };
     const LOCAL_KEYS = {
         blockUntil: 'frwl_block_until'
@@ -63,6 +64,22 @@
 
     function setSession(key, value) {
         sessionStorage.setItem(key, value.toString());
+    }
+
+    // Reels already counted this round, so scrolling back to them is free
+    function getSeenReels() {
+        try {
+            const seen = JSON.parse(sessionStorage.getItem(SESSION_KEYS.seen));
+            return Array.isArray(seen) ? seen : [];
+        } catch {
+            return [];
+        }
+    }
+
+    function addSeenReel(id) {
+        const seen = getSeenReels();
+        if (!seen.includes(id)) seen.push(id);
+        sessionStorage.setItem(SESSION_KEYS.seen, JSON.stringify(seen));
     }
 
     function setBlockUntil(value) {
@@ -108,6 +125,7 @@
 
     function resetCounter() {
         setSession(SESSION_KEYS.count, 0);
+        sessionStorage.removeItem(SESSION_KEYS.seen);
         setSession(SESSION_KEYS.lastVisit, now());
         setSession('frwl_first_visit', now());
         console.log('[ReelLimit] Counter reset');
@@ -543,10 +561,15 @@
         }
 
         const count = getSession(SESSION_KEYS.count, 0);
-        if (count + 1 > MAX_REELS) {
+        if (getSeenReels().includes(currentReelId)) {
+            setSession(SESSION_KEYS.lastVisit, now());
+            showProgressBar(count, MAX_REELS);
+            console.log(`[ReelLimit] Already counted ${currentReelId} — Count stays ${count}`);
+        } else if (count + 1 > MAX_REELS) {
             blockReels();
         } else {
             setSession(SESSION_KEYS.count, count + 1);
+            addSeenReel(currentReelId);
             setSession(SESSION_KEYS.lastVisit, now());
             showProgressBar(count + 1, MAX_REELS);
             console.log(`[ReelLimit] Count = ${count + 1}`);

@@ -10,7 +10,7 @@ A Tampermonkey script that lets you only watch a certain amount of Facebook reel
   Shows how long you've spent watching Reels during this session.
 
 - 📊 **Progress Bar Counter**  
-  See how many Reels you've watched out of your session limit.
+  See how many Reels you've watched out of your session limit. Scrolling back to a Reel you've already seen doesn't count it again.
 
 - ⛔ **Automatic Blocking**  
   After watching too many Reels, a countdown screen covers Reels for a cooldown period. Facebook's top bar (Home, search, Messenger, notifications) stays usable, and the rest of Facebook works normally.
